@@ -1,6 +1,9 @@
 package gotick
 
-import "time"
+import (
+	"fmt"
+	"time"
+)
 
 const (
 	// message of callCh
@@ -8,6 +11,11 @@ const (
 
 	// message of ctrlCh
 	StopConfirmMessage = "stopped"
+)
+
+var (
+	AlreadyStartedError = fmt.Errorf("gotick already started")
+	NotStartedError     = fmt.Errorf("gotick not started")
 )
 
 type (
@@ -20,30 +28,60 @@ type (
 	}
 )
 
+// run is a goroutine that wait ticker time timeout.
 func (t *Tick) run() {
+LOOP:
 	for {
 		select {
-		case <-t.ticker.C:
+		case <-t.ticker.C: // timer expired.
 			t.callback()
 		case msg := <-t.callCh:
 			if msg == StopMessage {
 				t.ticker.Stop()
-				t.respCh <- StopConfirmMessage
+				break LOOP // end of goroutine.
 			}
 		}
 	}
+	t.respCh <- StopConfirmMessage
 }
 
-func (t *Tick) Start() {
+// Start starts tick timer. Return error if already started.
+func (t *Tick) Start() error {
+	if t.ticker != nil {
+		return AlreadyStartedError
+	}
 	t.ticker = time.NewTicker(t.interval)
 	go t.run()
+	return nil
 }
 
-func (t *Tick) Stop() {
+// Stop stop tick timer and unlink ticker. Return error if not started.
+func (t *Tick) Stop() error {
+	if t.ticker == nil {
+		return NotStartedError
+	}
 	t.callCh <- StopMessage
-	<-t.respCh // waiting for stop confirm message
+	<-t.respCh     // waiting for stop confirm message
+	t.ticker = nil // unlink ticker.
+	return nil
 }
 
+// ChangeInterval changes tick interval.
+func (t *Tick) ChangeInterval(interval time.Duration) {
+	if t.ticker == nil {
+		// if ticker is not running, change property only.
+		t.interval = interval
+		return
+	}
+	// if ticker is already running, stop it and change interval.
+	t.callCh <- StopMessage
+	<-t.respCh     // waiting for stop confirm message
+	t.ticker = nil // unlink ticker.
+	t.interval = interval
+	_ = t.Start() // restart.
+}
+
+// NewTick returns new instance of gotick. At this moment, tick timer not be running.
 func NewTick(interval time.Duration, f func()) *Tick {
 	return &Tick{
 		ticker:   nil,
